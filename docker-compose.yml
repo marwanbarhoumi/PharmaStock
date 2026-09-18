@@ -1,0 +1,5 @@
+# Docker Compose placeholder for PharmaStock.
+# Full service definitions (frontend, backend, MongoDB, Nginx,
+# Prometheus, Grafana) will be added in the DevOps phase.
+
+services: {}

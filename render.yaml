@@ -1,0 +1,270 @@
+# PharmaStock — Render Blueprint (backend only; the frontend is deployed on Vercel).
+# See DEPLOYMENT.md before creating this Blueprint.
+#
+# - Only pharmastock-gateway is public (type: web). The 7 services are private (type: pserv).
+# - MongoDB is external (MongoDB Atlas). No database is created on Render.
+# - All services must stay in the same region to share the private network.
+#   The region cannot be changed after creation.
+# - No secret value is stored in this file:
+#     JWT_SECRET and INTERNAL_API_TOKEN are generated once by Render (environment groups).
+#     MONGODB_URI, CLIENT_URL, CORS_ORIGINS and ALLOW_PUBLIC_REGISTER use `sync: false`:
+#     Render prompts for them when the Blueprint is created, and later dashboard edits
+#     are kept across Blueprint syncs.
+#
+# Private service URLs: Render private hostnames carry a generated suffix
+# (e.g. pharmastock-auth-ab12), and the services expect full URLs such as
+# http://<host>:5002. Each consumer therefore receives the provider's private host
+# (fromService ... property: host), and its dockerCommand builds the URL before
+# starting the image's existing entry point (node dist/server.js).
+
+envVarGroups:
+  - name: pharmastock-shared
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+
+  # Shared by inventory (verifies x-internal-token) and notification, sales, purchase (send it).
+  - name: pharmastock-internal
+    envVars:
+      - key: INTERNAL_API_TOKEN
+        generateValue: true
+
+services:
+  # ---------------------------------------------------------------- public
+  - type: web
+    name: pharmastock-gateway
+    runtime: docker
+    region: frankfurt
+    plan: 0.5c-512mb
+    dockerfilePath: ./gateway/Dockerfile
+    dockerContext: ./gateway
+    buildFilter:
+      paths:
+        - gateway/**
+    healthCheckPath: /gateway/health
+    dockerCommand: '/bin/sh -c export AUTH_URL=http://$AUTH_PRIVATE_HOST:5002 MEDICINE_URL=http://$MEDICINE_PRIVATE_HOST:5003 INVENTORY_URL=http://$INVENTORY_PRIVATE_HOST:5004 NOTIFICATION_URL=http://$NOTIFICATION_PRIVATE_HOST:5005 SALES_URL=http://$SALES_PRIVATE_HOST:5006 PURCHASE_URL=http://$PURCHASE_PRIVATE_HOST:5007 REPORTING_URL=http://$REPORTING_PRIVATE_HOST:5008 && exec node dist/server.js'
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "5000"
+      - key: AUTH_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-auth, property: host }
+      - key: MEDICINE_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-medicine, property: host }
+      - key: INVENTORY_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-inventory, property: host }
+      - key: NOTIFICATION_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-notification, property: host }
+      - key: SALES_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-sales, property: host }
+      - key: PURCHASE_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-purchase, property: host }
+      - key: REPORTING_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-reporting, property: host }
+
+  # --------------------------------------------------------------- private
+  - type: pserv
+    name: pharmastock-auth
+    runtime: docker
+    region: frankfurt
+    plan: 0.5c-512mb
+    dockerfilePath: ./auth-service/Dockerfile
+    dockerContext: ./auth-service
+    buildFilter:
+      paths:
+        - auth-service/**
+    envVars:
+      - fromGroup: pharmastock-shared
+      - key: PORT
+        value: "5002"
+      - key: MONGODB_URI
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      # Enter "true" only to bootstrap the first ADMIN, then set it to "false" (see DEPLOYMENT.md).
+      - key: ALLOW_PUBLIC_REGISTER
+        sync: false
+
+  - type: pserv
+    name: pharmastock-medicine
+    runtime: docker
+    region: frankfurt
+    plan: 0.5c-512mb
+    dockerfilePath: ./medicine-service/Dockerfile
+    dockerContext: ./medicine-service
+    buildFilter:
+      paths:
+        - medicine-service/**
+    dockerCommand: '/bin/sh -c export AUTH_SERVICE_URL=http://$AUTH_PRIVATE_HOST:5002 && exec node dist/server.js'
+    envVars:
+      - fromGroup: pharmastock-shared
+      - key: PORT
+        value: "5003"
+      - key: MONGODB_URI
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: AUTH_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-auth, property: host }
+
+  - type: pserv
+    name: pharmastock-inventory
+    runtime: docker
+    region: frankfurt
+    plan: 0.5c-512mb
+    dockerfilePath: ./inventory-service/Dockerfile
+    dockerContext: ./inventory-service
+    buildFilter:
+      paths:
+        - inventory-service/**
+    dockerCommand: '/bin/sh -c export AUTH_SERVICE_URL=http://$AUTH_PRIVATE_HOST:5002 MEDICINE_SERVICE_URL=http://$MEDICINE_PRIVATE_HOST:5003 && exec node dist/server.js'
+    envVars:
+      - fromGroup: pharmastock-shared
+      - fromGroup: pharmastock-internal
+      - key: PORT
+        value: "5004"
+      - key: MONGODB_URI
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: EXPIRATION_WARNING_DAYS
+        value: "30"
+      - key: AUTH_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-auth, property: host }
+      - key: MEDICINE_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-medicine, property: host }
+
+  # Runs the scheduled alert check in-process: keep exactly one instance.
+  - type: pserv
+    name: pharmastock-notification
+    runtime: docker
+    region: frankfurt
+    plan: 0.5c-512mb
+    numInstances: 1
+    dockerfilePath: ./notification-service/Dockerfile
+    dockerContext: ./notification-service
+    buildFilter:
+      paths:
+        - notification-service/**
+    dockerCommand: '/bin/sh -c export AUTH_SERVICE_URL=http://$AUTH_PRIVATE_HOST:5002 INVENTORY_SERVICE_URL=http://$INVENTORY_PRIVATE_HOST:5004 && exec node dist/server.js'
+    envVars:
+      - fromGroup: pharmastock-shared
+      - fromGroup: pharmastock-internal
+      - key: PORT
+        value: "5005"
+      - key: MONGODB_URI
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: EXPIRATION_WARNING_DAYS
+        value: "30"
+      - key: STOCK_CHECK_ENABLED
+        value: "true"
+      - key: STOCK_CHECK_INTERVAL_MS
+        value: "3600000"
+      - key: AUTH_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-auth, property: host }
+      - key: INVENTORY_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-inventory, property: host }
+
+  - type: pserv
+    name: pharmastock-sales
+    runtime: docker
+    region: frankfurt
+    plan: 0.5c-512mb
+    dockerfilePath: ./sales-service/Dockerfile
+    dockerContext: ./sales-service
+    buildFilter:
+      paths:
+        - sales-service/**
+    dockerCommand: '/bin/sh -c export AUTH_SERVICE_URL=http://$AUTH_PRIVATE_HOST:5002 MEDICINE_SERVICE_URL=http://$MEDICINE_PRIVATE_HOST:5003 INVENTORY_SERVICE_URL=http://$INVENTORY_PRIVATE_HOST:5004 && exec node dist/server.js'
+    envVars:
+      - fromGroup: pharmastock-shared
+      - fromGroup: pharmastock-internal
+      - key: PORT
+        value: "5006"
+      - key: MONGODB_URI
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: SERVICE_TIMEOUT_MS
+        value: "10000"
+      - key: AUTH_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-auth, property: host }
+      - key: MEDICINE_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-medicine, property: host }
+      - key: INVENTORY_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-inventory, property: host }
+
+  - type: pserv
+    name: pharmastock-purchase
+    runtime: docker
+    region: frankfurt
+    plan: 0.5c-512mb
+    dockerfilePath: ./purchase-service/Dockerfile
+    dockerContext: ./purchase-service
+    buildFilter:
+      paths:
+        - purchase-service/**
+    dockerCommand: '/bin/sh -c export AUTH_SERVICE_URL=http://$AUTH_PRIVATE_HOST:5002 MEDICINE_SERVICE_URL=http://$MEDICINE_PRIVATE_HOST:5003 INVENTORY_SERVICE_URL=http://$INVENTORY_PRIVATE_HOST:5004 && exec node dist/server.js'
+    envVars:
+      - fromGroup: pharmastock-shared
+      - fromGroup: pharmastock-internal
+      - key: PORT
+        value: "5007"
+      - key: MONGODB_URI
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: SERVICE_TIMEOUT_MS
+        value: "10000"
+      - key: AUTH_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-auth, property: host }
+      - key: MEDICINE_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-medicine, property: host }
+      - key: INVENTORY_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-inventory, property: host }
+
+  # Read-only: never writes to MongoDB (a read-only Atlas user is recommended).
+  - type: pserv
+    name: pharmastock-reporting
+    runtime: docker
+    region: frankfurt
+    plan: 0.5c-512mb
+    dockerfilePath: ./reporting-service/Dockerfile
+    dockerContext: ./reporting-service
+    buildFilter:
+      paths:
+        - reporting-service/**
+    dockerCommand: '/bin/sh -c export AUTH_SERVICE_URL=http://$AUTH_PRIVATE_HOST:5002 && exec node dist/server.js'
+    envVars:
+      - fromGroup: pharmastock-shared
+      - key: PORT
+        value: "5008"
+      - key: MONGODB_URI
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: EXPIRATION_WARNING_DAYS
+        value: "30"
+      - key: AUTH_PRIVATE_HOST
+        fromService: { type: pserv, name: pharmastock-auth, property: host }

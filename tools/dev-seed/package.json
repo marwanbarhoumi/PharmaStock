@@ -1,0 +1,27 @@
+{
+  "name": "pharmastock-dev-seed",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PharmaStock development seed (admin user, sample categories, suppliers, medicines and batches)",
+  "scripts": {
+    "seed": "tsx src/seed.ts",
+    "test": "tsx --test tests/**/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "dotenv": "^17.4.2",
+    "mongoose": "^9.10.0"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/node": "^22.20.2",
+    "mongodb-memory-server": "^11.2.0",
+    "tsx": "^4.23.13",
+    "typescript": "^6.0.3"
+  }
+}

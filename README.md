@@ -429,9 +429,9 @@ Charts are implemented using **Recharts**.
 
 # 🔐 Authentication & Security
 
-The backend implements:
+The backend services implement:
 
--   JWT authentication
+-   JWT authentication (issued by the Auth Service; every other service validates tokens through Auth Service introspection)
 -   Password hashing with bcrypt
 -   Role-Based Access Control
 -   Protected API routes
@@ -461,27 +461,39 @@ Protected API Requests
 # 🏗️ Architecture
 
 ``` text
-                    ┌──────────────────────┐
-                    │        React         │
-                    │      Frontend        │
-                    └──────────┬───────────┘
-                               │
-                             Axios
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │      Express.js      │
-                    │       REST API       │
-                    └──────────┬───────────┘
-                               │
-                           Mongoose
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │       MongoDB        │
-                    │       Database       │
-                    └──────────────────────┘
+Browser
+ ↓
+Frontend (React SPA, Nginx :8080)
+ ↓  /api/*
+API Gateway :5000  (the only public backend entry point)
+ ├─ Auth :5002
+ ├─ Medicine :5003
+ ├─ Inventory :5004
+ ├─ Notification :5005
+ ├─ Sales :5006
+ ├─ Purchase :5007
+ └─ Reporting :5008 (read-only)
+       ↓
+   MongoDB (shared database "pharmastock")
 ```
+
+Each service is an Express.js + Mongoose application with its own Dockerfile, tests and
+README. The services still share one MongoDB database (`pharmastock`); this is **not**
+database-per-service isolation. Collection ownership (which service writes what):
+
+| Service | Owns (writes) |
+| --- | --- |
+| Auth | `users`, `audit_logs` (other services append their own audit entries, as implemented) |
+| Medicine | `medicines`, `categories` |
+| Inventory | `batches`, `stock_movements` (stock levels, FEFO) |
+| Notification | `notifications` (alert check and scheduler) |
+| Sales | `sales`, `sale_items` |
+| Purchase | `purchases`, `purchase_items`, `suppliers` |
+| Reporting | nothing: read-only access for the dashboard, reports and CSV exports |
+
+Services call each other only through private `/internal/*` endpoints on the Docker network;
+the Gateway never exposes them. See [`docker/README.md`](docker/README.md) and
+[`gateway/README.md`](gateway/README.md) for the routing matrix.
 
 ------------------------------------------------------------------------
 
@@ -501,7 +513,7 @@ Protected API Requests
 -   Recharts
 -   Lucide React
 
-## Backend
+## Backend (microservices)
 
 -   Node.js
 -   Express.js
@@ -509,7 +521,7 @@ Protected API Requests
 -   Mongoose
 -   JWT
 -   bcrypt
--   Multer
+-   http-proxy-middleware (API Gateway)
 
 ## DevOps
 
@@ -574,18 +586,22 @@ pharmastock/
 │   ├── package.json
 │   └── vite.config.ts
 │
-├── backend/
-│   ├── src/
-│   │   ├── controllers/
-│   │   ├── models/
-│   │   ├── routes/
-│   │   ├── middleware/
-│   │   ├── services/
-│   │   ├── config/
-│   │   └── utils/
-│   │
-│   ├── uploads/
+├── gateway/                 # API Gateway :5000 (routing only)
+├── auth-service/            # :5002
+├── medicine-service/        # :5003
+├── inventory-service/       # :5004
+├── notification-service/    # :5005
+├── sales-service/           # :5006
+├── purchase-service/        # :5007
+├── reporting-service/       # :5008 (read-only)
+│   ├── src/                 # each service: config, controllers, middleware,
+│   │                        # models, routes, schemas, services, utils
+│   ├── tests/
+│   ├── Dockerfile
 │   └── package.json
+│
+├── tools/
+│   └── dev-seed/            # development seed (npm run seed)
 │
 ├── docker/
 │
@@ -603,9 +619,10 @@ PharmaStock uses **MongoDB** with **Mongoose** as the ODM.
 
 Database name: `pharmastock`
 
-Connection module: `backend/src/config/database.ts`
+Connection module: `src/config/database.ts` in each service. All services connect to the same
+`pharmastock` database (shared database; see the ownership table in [Architecture](#️-architecture)).
 
-The API connects to MongoDB during startup and refuses to start if the database is unavailable.
+Each service connects to MongoDB during startup and refuses to start if the database is unavailable.
 
 ## Main collections
 
@@ -684,12 +701,17 @@ This balances:
 
 ## Development seed
 
-``` bash
-cd backend
-npm run seed
+``` powershell
+npm install --prefix tools/dev-seed
+npm run seed          # from the repository root (MONGODB_URI defaults to mongodb://localhost:27017/pharmastock)
 ```
 
 Seeds only run when explicitly requested. Production seeding is blocked unless `ALLOW_SEED=true`.
+The seed replaces its own sample records (the seed admin, 3 categories, 3 suppliers, 3 medicines, 3 batches) and leaves all other data untouched.
+
+The seed creates `admin@pharmastock.local` (role `ADMIN`). The development password is defined in `tools/dev-seed/src/seed.ts` and is printed once by the seed script to the console (it is stored hashed in MongoDB). Do not use seed credentials in production.
+
+If login fails for that email, confirm the user exists in the `pharmastock` database and that the Auth Service is connected to the same MongoDB instance.
 
 ------------------------------------------------------------------------
 
@@ -786,21 +808,22 @@ GET /api/reports/profit
 
 # ⚙️ Environment Variables
 
-Create a `.env` file in the backend from `backend/.env.example`:
+Each service has its own `.env.example` (`auth-service/`, `medicine-service/`, `inventory-service/`,
+`notification-service/`, `sales-service/`, `purchase-service/`, `reporting-service/`, `gateway/`).
+Copy each to `.env` for local development. The shared values are:
 
 ``` env
-PORT=5000
-
-MONGODB_URI=mongodb://localhost:27017/pharmastock
-
-JWT_SECRET=your_super_secret_key
-
+MONGODB_URI=mongodb://127.0.0.1:27017/pharmastock   # same database for every service
+JWT_SECRET=your_own_long_random_secret_at_least_32_chars   # same secret for every service
+JWT_EXPIRES_IN=7d
 CLIENT_URL=http://localhost:5173
-
-EXPIRATION_WARNING_DAYS=30
-STOCK_CHECK_INTERVAL_MS=3600000
-STOCK_CHECK_ENABLED=true
+AUTH_SERVICE_URL=http://127.0.0.1:5002   # every service except Auth
+NODE_ENV=development
 ```
+
+Service-specific values (for example `MEDICINE_SERVICE_URL`, `INVENTORY_SERVICE_URL`,
+`INTERNAL_API_TOKEN`, `STOCK_CHECK_*`, `EXPIRATION_WARNING_DAYS`, the Gateway's `*_URL` targets)
+are documented in each `.env.example` and README.
 
 Create a `.env` file in the frontend from `frontend/.env.example`:
 
@@ -808,157 +831,186 @@ Create a `.env` file in the frontend from `frontend/.env.example`:
 VITE_API_URL=http://localhost:5000/api
 ```
 
-------------------------------------------------------------------------
+For Docker Compose, also create a **root** `.env` from `.env.example`:
 
-# 🚀 Installation
-
-## 1. Clone the repository
-
-``` bash
-git clone https://github.com/your-username/pharmastock.git
-
-cd pharmastock
+``` env
+JWT_SECRET=your_own_long_random_secret_at_least_32_chars
+CLIENT_URL=http://localhost:8080
+ALLOW_PUBLIC_REGISTER=true
 ```
 
-## 2. Install dependencies
+Do not commit real secrets. `.env` files are gitignored. Production builds reject short or documented placeholder `JWT_SECRET` values.
 
-From the repository root:
+------------------------------------------------------------------------
 
-``` bash
+# ▶️ Run the Application (local development)
+
+Local development uses Vite (port 5173), the API Gateway (port 5000) and the seven services
+(ports 5002–5008) with a MongoDB instance on the host (`localhost` / `127.0.0.1`).
+
+## Start everything (frontend, Gateway and all services)
+
+``` powershell
 npm run install:all
-```
-
-Or install each package separately:
-
-``` bash
-cd frontend
-npm install
-
-cd ../backend
-npm install
-
-cd ..
-npm install
-```
-
-## 3. Configure environment variables
-
-``` bash
-cp frontend/.env.example frontend/.env
-cp backend/.env.example backend/.env
-```
-
-Update the values according to your environment. Do not commit real secrets.
-
-------------------------------------------------------------------------
-
-# ▶️ Run the Application
-
-## Start frontend and backend together
-
-``` bash
+Copy-Item frontend/.env.example frontend/.env
+# Copy <service>/.env.example to <service>/.env for gateway and each *-service
 npm run dev
 ```
 
-## Start Backend only
+## Start a single service
 
-``` bash
-cd backend
-
-npm run dev
+``` powershell
+npm run dev:gateway        # :5000
+npm run dev:auth           # :5002
+npm run dev:medicine       # :5003
+npm run dev:inventory      # :5004
+npm run dev:notification   # :5005
+npm run dev:sales          # :5006
+npm run dev:purchase       # :5007
+npm run dev:reporting      # :5008
 ```
 
-Backend:
-
-``` text
-http://localhost:5000
-```
-
-Health check:
-
-``` http
-GET http://localhost:5000/api/health
-```
+Public API: `http://localhost:5000/api` — health: `GET /api/health` (answered by the Gateway)
 
 ## Start Frontend only
 
 ``` bash
 cd frontend
-
 npm run dev
 ```
 
-Frontend:
-
-``` text
-http://localhost:5173
-```
+Frontend: `http://localhost:5173`
 
 ------------------------------------------------------------------------
 
-# 🐳 Docker
+# 🐳 Docker Compose (production-style stack)
 
-Run the complete application:
+Runs **10 containers** on an internal Docker network: frontend (Nginx), API Gateway,
+Auth, Medicine, Inventory, Notification, Sales, Purchase, Reporting and MongoDB.
 
-``` bash
-docker compose up --build
+| Container | Host access | Notes |
+| --- | --- | --- |
+| Frontend | `http://localhost:8080` | Nginx serves the SPA and proxies `/api` → Gateway |
+| Gateway | `http://localhost:5000` | Only public backend entry point; `GET /gateway/health` shows every service |
+| Auth … Reporting | `127.0.0.1:5002` … `127.0.0.1:5008` | Debug only (loopback); not public |
+| MongoDB | `127.0.0.1:27017` | Host-only publish for local `npm run dev`; data in `mongo_data` volume |
+
+``` powershell
+Copy-Item .env.example .env
+# Edit JWT_SECRET to a unique 32+ character value (placeholders are rejected)
+
+docker compose up --build -d
+docker compose ps
 ```
 
-Run in detached mode:
+Stop (keeps the Mongo volume):
 
-``` bash
-docker compose up -d
-```
-
-Stop containers:
-
-``` bash
+``` powershell
 docker compose down
 ```
 
-View logs:
+Data persists in the `mongo_data` volume. **Never** run `docker compose down -v`: it deletes the database volume.
+See [`docker/README.md`](docker/README.md) for the full container map and private service calls.
+
+### Local vs Docker configuration
+
+| Setting | Local (`npm run dev`) | Docker Compose |
+| --- | --- | --- |
+| Frontend API URL | `VITE_API_URL=http://localhost:5000/api` | Build arg `/api` (Nginx proxy) |
+| MongoDB URI | `mongodb://localhost:27017/pharmastock` | `mongodb://mongo:27017/pharmastock` |
+| CLIENT_URL | `http://localhost:5173` | `http://localhost:8080` |
+| Frontend port | 5173 (Vite) | 8080 → container 80 |
+| Public register | Default true (non-production) | Default true via Compose env |
+
+### Manual steps still required
+
+- Provide a strong unique `JWT_SECRET` in root `.env` before Compose (documented placeholders are rejected when `NODE_ENV=production`).
+- Optional demo data: create the first account via the register UI (Compose defaults `ALLOW_PUBLIC_REGISTER=true`), then promote roles in MongoDB if needed. Production images do not include the seed script; run `npm run seed` from a development checkout only against a non-production database, with `ALLOW_SEED=true` if `NODE_ENV=production`.
+- TLS/HTTPS and image publishing are **not** automated.
+- Prometheus/Grafana are deferred.
+
+------------------------------------------------------------------------
+
+# ☁️ Cloud deployment readiness (manual)
+
+PharmaStock is **not** auto-deployed. Use these targets when you are ready; do not treat this as a completed deployment.
+
+## MongoDB Atlas
+
+1. Create a free/shared cluster and database user.
+2. Allow network access from your service hosts (or `0.0.0.0/0` only while testing).
+3. Copy the SRV connection string into every service's `MONGODB_URI` (one shared database).
+4. Prefer a dedicated DB name (e.g. `pharmastock`).
+
+## Backend services
+
+The backend is now eight deployables (Gateway + seven services). Each has a Dockerfile and
+`npm ci && npm run build` / `npm start`. For each service:
+
+1. Set `NODE_ENV=production`, `PORT`, `MONGODB_URI`, the same unique `JWT_SECRET` (≥32 chars, not a README placeholder), `CLIENT_URL` to your frontend URL (https), and `AUTH_SERVICE_URL` (all except Auth). On Auth, usually `ALLOW_PUBLIC_REGISTER=false`.
+2. Set the private service URLs (`MEDICINE_SERVICE_URL`, `INVENTORY_SERVICE_URL`) and, ideally, `INTERNAL_API_TOKEN`; keep `/internal/*` off the public internet.
+3. Expose only the Gateway publicly, with its `*_URL` targets pointing to the services. Health check path: `/gateway/health` (Gateway) or `/api/health` (each service).
+4. Confirm CORS matches the frontend origin exactly.
+
+## Frontend on Vercel
+
+1. New project; root directory `frontend`.
+2. Framework: Vite. Build: `npm run build` — Output: `dist`.
+3. Set `VITE_API_URL` to the public Gateway API base, e.g. `https://your-gateway.example.com/api` (no trailing path beyond `/api`).
+4. SPA routing: ensure all routes rewrite to `/index.html` (Vercel Vite preset usually handles this).
+5. Redeploy after changing `VITE_API_URL` (it is baked in at build time).
+
+## Checklist before go-live
+
+- [ ] Strong unique `JWT_SECRET`
+- [ ] `ALLOW_PUBLIC_REGISTER=false` (or admin-only registration)
+- [ ] `ALLOW_SEED` not enabled
+- [ ] Atlas network rules tightened
+- [ ] CORS `CLIENT_URL` matches the real frontend origin
+- [ ] Change or remove any seed admin password if seed was used
+- [ ] Inventory CRUD UI is still incomplete — plan ops accordingly
+
+------------------------------------------------------------------------
+
+# 🧪 Tests and builds
+
+In each service directory (`gateway`, `auth-service`, `medicine-service`, `inventory-service`,
+`notification-service`, `sales-service`, `purchase-service`, `reporting-service`):
+
+``` powershell
+npm run typecheck
+npm test          # MongoMemoryServer and mock upstreams; never touches the real database
+npm run build
+```
+
+Frontend (`frontend/`): `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`.
+Dev seed (`tools/dev-seed/`): `npm run typecheck`, `npm test`.
+
+From the repository root:
+
+``` powershell
+npm run typecheck
+npm run lint
+npm run build
+```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the frontend checks, typecheck/test/build for the Gateway and every service, the dev-seed tests, and `docker compose config` validation. It does **not** deploy.
+
+------------------------------------------------------------------------
+
+# 📦 Docker images (manual)
 
 ``` bash
-docker compose logs -f
+docker compose build    # gateway, the seven services and the frontend
+docker build -t pharmastock-frontend ./frontend --build-arg VITE_API_URL=/api
+docker compose config
 ```
 
 ------------------------------------------------------------------------
 
-# 🧪 Testing
+# 📈 Monitoring (future)
 
-Frontend tests:
-
-``` bash
-cd frontend
-npm run test
-```
-
-Backend tests:
-
-``` bash
-cd backend
-npm run test
-```
-
-The project should include unit and integration tests for:
-
--   Authentication
--   Medicines
--   Stock
--   Sales
--   Purchases
--   Alerts
--   Permissions
-
-------------------------------------------------------------------------
-
-# 📈 Monitoring
-
-PharmaStock can expose Prometheus metrics:
-
-``` http
-GET /metrics
-```
+Prometheus metrics and Grafana dashboards are planned but not included in Phase 9.
 
 Monitoring architecture:
 
@@ -986,29 +1038,15 @@ Possible metrics:
 
 # 🔄 CI/CD
 
-The project can use GitHub Actions or Jenkins.
+The repository includes a **verify-only** GitHub Actions workflow (`.github/workflows/ci.yml`):
 
-Pipeline:
+- Install dependencies
+- Frontend lint / typecheck / tests / build
+- Gateway and per-service typecheck, memory-mongo test suites and builds
+- Dev-seed tests
+- `docker compose config` validation
 
-``` text
-Git Push
-   ↓
-Checkout
-   ↓
-Install Dependencies
-   ↓
-Run Tests
-   ↓
-Build Frontend
-   ↓
-Build Backend
-   ↓
-Build Docker Images
-   ↓
-Push Images
-   ↓
-Deploy
-```
+It does **not** push images or deploy. Image publishing and cloud deployment remain future work.
 
 ------------------------------------------------------------------------
 
@@ -1018,24 +1056,23 @@ Deploy
                     Internet
                        │
                        ▼
-                    Nginx
+              Nginx (React frontend)
+                       │  /api/*
+                       ▼
+                 API Gateway :5000
                        │
-             ┌─────────┴─────────┐
-             │                   │
-             ▼                   ▼
-          React               Express
-        Frontend                API
-                                │
-                                ▼
-                             MongoDB
-                                │
-                       ┌────────┴────────┐
-                       │                 │
-                       ▼                 ▼
-                   Prometheus         Backup
+   ┌──────┬──────────┬─┴────────┬─────────────┬───────┬──────────┬───────────┐
+   ▼      ▼          ▼          ▼             ▼       ▼          ▼
+  Auth  Medicine  Inventory  Notification   Sales  Purchase  Reporting
+   └──────┴──────────┴──────────┴─────────────┴───────┴──────────┘
                        │
                        ▼
-                    Grafana
+             MongoDB (shared "pharmastock")
+                       │
+              ┌────────┴────────┐
+              ▼                 ▼
+         Prometheus          Backup
+          (future)          (future)
 ```
 
 ------------------------------------------------------------------------
@@ -1097,35 +1134,48 @@ Deploy
 
 ## Phase 7 --- Transactions
 
--   [ ] Sales
--   [ ] Purchases
--   [ ] Automatic stock updates
--   [ ] Sales history
--   [ ] Purchase history
--   [ ] Transaction details
+-   [x] Sales
+-   [x] Purchases
+-   [x] Automatic stock updates
+-   [x] Sales history
+-   [x] Purchase history
+-   [x] Transaction details
 
 ## Phase 8 --- Dashboard & Reports
 
--   [ ] Dashboard
--   [ ] Statistics
--   [ ] Charts
--   [ ] Sales reports
--   [ ] Stock reports
--   [ ] Expiration reports
--   [ ] Profit reports
--   [ ] PDF export
--   [ ] Excel export
+-   [x] Dashboard
+-   [x] Statistics
+-   [x] Charts
+-   [x] Sales reports
+-   [x] Stock reports
+-   [x] Expiration reports
+-   [x] Profit reports
+-   [x] PDF export
+-   [x] Excel export
 
 ## Phase 9 --- DevOps
 
--   [ ] Docker
--   [ ] Docker Compose
--   [ ] Nginx
--   [ ] CI/CD
+-   [x] Docker
+-   [x] Docker Compose
+-   [x] Nginx
+-   [x] CI (GitHub Actions verify-only)
 -   [ ] Docker image publishing
 -   [ ] Prometheus
 -   [ ] Grafana
 -   [ ] Production deployment
+
+## Microservices migration (strangler fig, complete)
+
+-   [x] API Gateway as the single public entry point
+-   [x] Auth Service (users, JWT, introspection, audit logs)
+-   [x] Medicine Service (medicines, categories, barcode)
+-   [x] Inventory Service (batches, stock, movements, FEFO, alert snapshots)
+-   [x] Notification Service (notifications, alert check, scheduler)
+-   [x] Sales Service
+-   [x] Purchase Service (purchases, suppliers)
+-   [x] Reporting Service (read-only dashboard, reports, CSV)
+-   [x] Monolith decommissioned (removed from the runtime and the repository)
+-   [ ] Database-per-service (the services still share the `pharmastock` database)
 
 ------------------------------------------------------------------------
 

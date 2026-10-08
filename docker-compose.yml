@@ -1,5 +1,409 @@
-# Docker Compose placeholder for PharmaStock.
-# Full service definitions (frontend, backend, MongoDB, Nginx,
-# Prometheus, Grafana) will be added in the DevOps phase.
+# PharmaStock local/production-style stack (Gateway → Auth + Medicine + Inventory + Notification + Sales + Purchase + Reporting)
+# Usage:
+#   1. cp .env.example .env   (set a strong JWT_SECRET)
+#   2. docker compose up --build
+#
+# Frontend: http://localhost:8080
+# API Gateway (public): http://localhost:5000
+#   /api/auth/*, /api/audit-logs → Auth Service :5002
+#   /api/medicines/*, /api/categories/* → Medicine Service :5003
+#   /api/batches/*, /api/stock/*, /api/alerts/* (except /api/alerts/check) → Inventory Service :5004
+#   /api/notifications/*, /api/alerts/check → Notification Service :5005
+#   /api/sales/* → Sales Service :5006
+#   /api/purchases/*, /api/suppliers/* → Purchase Service :5007
+#   /api/dashboard/*, /api/reports/* → Reporting Service :5008 (read-only)
+#   /api/health → answered by the Gateway (aggregated service health)
+#   any other /api/* → 404
+#   /internal/* is never proxied (404)
+# Auth (debug): http://127.0.0.1:5002/api/health
+# Medicine (debug): http://127.0.0.1:5003/api/health
+# Inventory (debug): http://127.0.0.1:5004/api/health
+# Notification (debug): http://127.0.0.1:5005/api/health
+# Sales (debug): http://127.0.0.1:5006/api/health
+# Purchase (debug): http://127.0.0.1:5007/api/health
+# Reporting (debug): http://127.0.0.1:5008/api/health
+# MongoDB: 127.0.0.1:27017 (host-only — for local npm run dev)
+# NEVER run: docker compose down -v  (destroys mongo_data)
 
-services: {}
+services:
+  mongo:
+    image: mongo:7
+    container_name: pharmastock-mongo
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - pharmastock
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  auth:
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+    container_name: pharmastock-auth
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5002
+      MONGODB_URI: mongodb://mongo:27017/pharmastock
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:8080}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:5173}
+      ALLOW_PUBLIC_REGISTER: ${ALLOW_PUBLIC_REGISTER:-true}
+    ports:
+      - "127.0.0.1:5002:5002"
+    networks:
+      - pharmastock
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5002/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+  medicine:
+    build:
+      context: ./medicine-service
+      dockerfile: Dockerfile
+    container_name: pharmastock-medicine
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5003
+      MONGODB_URI: mongodb://mongo:27017/pharmastock
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:8080}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:5173}
+      AUTH_SERVICE_URL: http://auth:5002
+    ports:
+      - "127.0.0.1:5003:5003"
+    networks:
+      - pharmastock
+    depends_on:
+      mongo:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5003/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+  inventory:
+    build:
+      context: ./inventory-service
+      dockerfile: Dockerfile
+    container_name: pharmastock-inventory
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5004
+      MONGODB_URI: mongodb://mongo:27017/pharmastock
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:8080}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:5173}
+      EXPIRATION_WARNING_DAYS: ${EXPIRATION_WARNING_DAYS:-30}
+      AUTH_SERVICE_URL: http://auth:5002
+      MEDICINE_SERVICE_URL: http://medicine:5003
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
+    ports:
+      - "127.0.0.1:5004:5004"
+    networks:
+      - pharmastock
+    depends_on:
+      mongo:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+      medicine:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5004/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+  notification:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    container_name: pharmastock-notification
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5005
+      MONGODB_URI: mongodb://mongo:27017/pharmastock
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:8080}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:5173}
+      AUTH_SERVICE_URL: http://auth:5002
+      INVENTORY_SERVICE_URL: http://inventory:5004
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
+      # The only alert-check scheduler.
+      EXPIRATION_WARNING_DAYS: ${EXPIRATION_WARNING_DAYS:-30}
+      STOCK_CHECK_INTERVAL_MS: ${STOCK_CHECK_INTERVAL_MS:-3600000}
+      STOCK_CHECK_ENABLED: ${STOCK_CHECK_ENABLED:-true}
+    ports:
+      - "127.0.0.1:5005:5005"
+    networks:
+      - pharmastock
+    depends_on:
+      mongo:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+      inventory:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5005/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+  sales:
+    build:
+      context: ./sales-service
+      dockerfile: Dockerfile
+    container_name: pharmastock-sales
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5006
+      MONGODB_URI: mongodb://mongo:27017/pharmastock
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:8080}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:5173}
+      AUTH_SERVICE_URL: http://auth:5002
+      MEDICINE_SERVICE_URL: http://medicine:5003
+      INVENTORY_SERVICE_URL: http://inventory:5004
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
+    ports:
+      - "127.0.0.1:5006:5006"
+    networks:
+      - pharmastock
+    depends_on:
+      mongo:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+      medicine:
+        condition: service_healthy
+      inventory:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5006/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+  purchase:
+    build:
+      context: ./purchase-service
+      dockerfile: Dockerfile
+    container_name: pharmastock-purchase
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5007
+      MONGODB_URI: mongodb://mongo:27017/pharmastock
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:8080}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:5173}
+      AUTH_SERVICE_URL: http://auth:5002
+      MEDICINE_SERVICE_URL: http://medicine:5003
+      INVENTORY_SERVICE_URL: http://inventory:5004
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
+    ports:
+      - "127.0.0.1:5007:5007"
+    networks:
+      - pharmastock
+    depends_on:
+      mongo:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+      medicine:
+        condition: service_healthy
+      inventory:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5007/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+  reporting:
+    build:
+      context: ./reporting-service
+      dockerfile: Dockerfile
+    container_name: pharmastock-reporting
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5008
+      MONGODB_URI: mongodb://mongo:27017/pharmastock
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:8080}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:5173}
+      AUTH_SERVICE_URL: http://auth:5002
+      # Same value as the other services so "expiring soon" counts stay identical.
+      EXPIRATION_WARNING_DAYS: ${EXPIRATION_WARNING_DAYS:-30}
+    ports:
+      - "127.0.0.1:5008:5008"
+    networks:
+      - pharmastock
+    depends_on:
+      mongo:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5008/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    container_name: pharmastock-gateway
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      AUTH_URL: http://auth:5002
+      MEDICINE_URL: http://medicine:5003
+      INVENTORY_URL: http://inventory:5004
+      NOTIFICATION_URL: http://notification:5005
+      SALES_URL: http://sales:5006
+      PURCHASE_URL: http://purchase:5007
+      REPORTING_URL: http://reporting:5008
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:8080}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:5173}
+    ports:
+      - "5000:5000"
+    networks:
+      - pharmastock
+    depends_on:
+      auth:
+        condition: service_healthy
+      medicine:
+        condition: service_healthy
+      inventory:
+        condition: service_healthy
+      notification:
+        condition: service_healthy
+      sales:
+        condition: service_healthy
+      purchase:
+        condition: service_healthy
+      reporting:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5000/gateway/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api
+    container_name: pharmastock-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    networks:
+      - pharmastock
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+networks:
+  pharmastock:
+    driver: bridge
+
+volumes:
+  mongo_data:

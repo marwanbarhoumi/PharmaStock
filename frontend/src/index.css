@@ -130,10 +130,19 @@
   body {
     @apply min-h-screen bg-background text-foreground;
     font-family:
-      'Segoe UI',
       'IBM Plex Sans',
+      'Segoe UI',
       system-ui,
       -apple-system,
+      sans-serif;
+  }
+
+  html[dir='rtl'] body {
+    font-family:
+      'IBM Plex Sans Arabic',
+      'Segoe UI',
+      Tahoma,
+      system-ui,
       sans-serif;
   }
 

@@ -26,6 +26,8 @@ export default defineConfig([
         'error',
         { allowConstantExport: true },
       ],
+      // Data-fetching pages call loaders from effects; cascading setState is intentional.
+      'react-hooks/set-state-in-effect': 'off',
     },
   },
   {

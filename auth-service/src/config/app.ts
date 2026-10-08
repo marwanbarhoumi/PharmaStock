@@ -1,0 +1,30 @@
+import type { CorsOptions } from 'cors'
+
+import type { Env } from './env.js'
+
+export const appConfig = {
+  name: 'PharmaStock Auth Service',
+  apiPrefix: '/api',
+} as const
+
+/** Allowed browser origins: CLIENT_URL plus optional CORS_ORIGINS. */
+export function getAllowedCorsOrigins(env: Env): string[] {
+  return Array.from(new Set([env.CLIENT_URL, ...(env.CORS_ORIGINS ?? [])]))
+}
+
+export function getCorsOrigin(env: Env): CorsOptions['origin'] {
+  const allowed = getAllowedCorsOrigins(env)
+
+  return (origin, callback) => {
+    // Non-browser clients (curl, server-to-server) send no Origin.
+    if (!origin) {
+      callback(null, true)
+      return
+    }
+    if (allowed.includes(origin)) {
+      callback(null, true)
+      return
+    }
+    callback(null, false)
+  }
+}

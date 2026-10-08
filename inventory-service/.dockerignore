@@ -1,0 +1,15 @@
+node_modules
+dist
+coverage
+.env
+.env.*
+!.env.example
+*.log
+.git
+.gitignore
+.vscode
+.idea
+tests
+*.md
+eslint.config.js
+.tsbuildinfo

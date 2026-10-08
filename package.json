@@ -4,13 +4,21 @@
   "private": true,
   "description": "PharmaStock — professional pharmacy inventory management system",
   "scripts": {
-    "dev": "concurrently -n frontend,backend -c cyan,magenta \"npm run dev --prefix frontend\" \"npm run dev --prefix backend\"",
+    "dev": "concurrently -n frontend,gateway,auth,medicine,inventory,notification,sales,purchase,reporting \"npm run dev --prefix frontend\" \"npm run dev --prefix gateway\" \"npm run dev --prefix auth-service\" \"npm run dev --prefix medicine-service\" \"npm run dev --prefix inventory-service\" \"npm run dev --prefix notification-service\" \"npm run dev --prefix sales-service\" \"npm run dev --prefix purchase-service\" \"npm run dev --prefix reporting-service\"",
     "dev:frontend": "npm run dev --prefix frontend",
-    "dev:backend": "npm run dev --prefix backend",
-    "build": "npm run build --prefix frontend && npm run build --prefix backend",
-    "lint": "npm run lint --prefix frontend && npm run lint --prefix backend",
-    "typecheck": "npm run typecheck --prefix frontend && npm run typecheck --prefix backend",
-    "install:all": "npm install --prefix frontend && npm install --prefix backend && npm install"
+    "dev:auth": "npm run dev --prefix auth-service",
+    "dev:medicine": "npm run dev --prefix medicine-service",
+    "dev:inventory": "npm run dev --prefix inventory-service",
+    "dev:notification": "npm run dev --prefix notification-service",
+    "dev:sales": "npm run dev --prefix sales-service",
+    "dev:purchase": "npm run dev --prefix purchase-service",
+    "dev:reporting": "npm run dev --prefix reporting-service",
+    "dev:gateway": "npm run dev --prefix gateway",
+    "build": "npm run build --prefix frontend && npm run build --prefix auth-service && npm run build --prefix medicine-service && npm run build --prefix inventory-service && npm run build --prefix notification-service && npm run build --prefix sales-service && npm run build --prefix purchase-service && npm run build --prefix reporting-service && npm run build --prefix gateway",
+    "lint": "npm run lint --prefix frontend",
+    "typecheck": "npm run typecheck --prefix frontend && npm run typecheck --prefix auth-service && npm run typecheck --prefix medicine-service && npm run typecheck --prefix inventory-service && npm run typecheck --prefix notification-service && npm run typecheck --prefix sales-service && npm run typecheck --prefix purchase-service && npm run typecheck --prefix reporting-service && npm run typecheck --prefix gateway",
+    "seed": "npm run seed --prefix tools/dev-seed",
+    "install:all": "npm install --prefix frontend && npm install --prefix auth-service && npm install --prefix medicine-service && npm install --prefix inventory-service && npm install --prefix notification-service && npm install --prefix sales-service && npm install --prefix purchase-service && npm install --prefix reporting-service && npm install --prefix gateway && npm install --prefix tools/dev-seed && npm install"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"
